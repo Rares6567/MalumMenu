@@ -1,0 +1,136 @@
+name: Release MalumMenu
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 3.4.0"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark this release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 6.0.x
+          cache: true
+          cache-dependency-path: src/MalumMenu.csproj
+
+      - name: Restore
+        run: dotnet restore src/MalumMenu.csproj
+
+      - name: Build
+        run: dotnet build src/MalumMenu.csproj --configuration Release --no-restore
+
+      - name: Download release package templates
+        shell: pwsh
+        run: |
+          $baseVersion = "3.3.0"
+          $baseUrl = "https://github.com/scp222thj/MalumMenu/releases/download/v$baseVersion"
+
+          Invoke-WebRequest -Uri "$baseUrl/MalumMenu-$baseVersion-Steam-Itch.zip" -OutFile "MalumMenu-$baseVersion-Steam-Itch.zip"
+          Invoke-WebRequest -Uri "$baseUrl/MalumMenu-$baseVersion-MicrosoftStore-EpicGames-XboxApp.zip" -OutFile "MalumMenu-$baseVersion-MicrosoftStore-EpicGames-XboxApp.zip"
+
+      - name: Build release packages
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dll = "src/bin/Release/net6.0/MalumMenu.dll"
+          if (!(Test-Path $dll)) {
+            throw "Built MalumMenu.dll was not found at $dll"
+          }
+
+          New-Item -ItemType Directory -Force -Path "release/steam" | Out-Null
+          New-Item -ItemType Directory -Force -Path "release/ms" | Out-Null
+
+          Expand-Archive -Path "MalumMenu-3.3.0-Steam-Itch.zip" -DestinationPath "release/steam" -Force
+          Expand-Archive -Path "MalumMenu-3.3.0-MicrosoftStore-EpicGames-XboxApp.zip" -DestinationPath "release/ms" -Force
+
+          $steamPlugin = Get-ChildItem "release/steam" -Filter "MalumMenu.dll" -Recurse | Select-Object -First 1
+          $msPlugin = Get-ChildItem "release/ms" -Filter "MalumMenu.dll" -Recurse | Select-Object -First 1
+          if (!$steamPlugin -or !$msPlugin) {
+            throw "Could not find the existing MalumMenu.dll inside one of the package templates"
+          }
+
+          Copy-Item $dll $steamPlugin.FullName -Force
+          Copy-Item $dll $msPlugin.FullName -Force
+          Copy-Item $dll "MalumMenu-$env:VERSION.dll" -Force
+
+          Compress-Archive -Path "release/steam/*" -DestinationPath "MalumMenu-$env:VERSION-Steam-Itch.zip" -Force
+          Compress-Archive -Path "release/ms/*" -DestinationPath "MalumMenu-$env:VERSION-MicrosoftStore-EpicGames-XboxApp.zip" -Force
+
+      - name: Verify release contents
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($zip in @(
+            "MalumMenu-$env:VERSION-Steam-Itch.zip",
+            "MalumMenu-$env:VERSION-MicrosoftStore-EpicGames-XboxApp.zip"
+          )) {
+            if (!(Test-Path $zip)) {
+              throw "Missing release asset: $zip"
+            }
+
+            $entries = tar -tf $zip
+
+            if (!($entries | Select-String "BepInEx/plugins/MalumMenu.dll")) {
+              throw "$zip does not contain BepInEx/plugins/MalumMenu.dll"
+            }
+
+            if (!($entries | Select-String "BepInEx/core/")) {
+              throw "$zip does not contain the BepInEx core files"
+            }
+
+            if (!($entries | Select-String "dotnet/")) {
+              throw "$zip does not contain the .NET runtime"
+            }
+          }
+
+          if (!(Test-Path "MalumMenu-$env:VERSION.dll")) {
+            throw "Missing standalone DLL"
+          }
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: pwsh
+        run: |
+          $tag = "v$env:VERSION"
+          $args = @(
+            "release", "create", $tag,
+            "MalumMenu-$env:VERSION-Steam-Itch.zip",
+            "MalumMenu-$env:VERSION-MicrosoftStore-EpicGames-XboxApp.zip",
+            "MalumMenu-$env:VERSION.dll",
+            "--title", "MalumMenu v$env:VERSION",
+            "--generate-notes"
+          )
+
+          if ($env:PRERELEASE -eq "true") {
+            $args += "--prerelease"
+          }
+
+          gh @args

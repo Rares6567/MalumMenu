@@ -1,0 +1,52 @@
+name: Build MalumMenu
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MalumMenu
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 6.0.x
+          cache: true
+          cache-dependency-path: src/MalumMenu.csproj
+
+      - name: Restore
+        run: dotnet restore src/MalumMenu.csproj
+
+      - name: Build
+        run: dotnet build src/MalumMenu.csproj --configuration Release --no-restore
+
+      - name: Collect build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item "src/bin/Release/net6.0/MalumMenu.dll" "artifacts/MalumMenu.dll"
+          if (Test-Path "src/bin/Release/net6.0/MalumMenu.pdb") {
+            Copy-Item "src/bin/Release/net6.0/MalumMenu.pdb" "artifacts/MalumMenu.pdb"
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: MalumMenu-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
